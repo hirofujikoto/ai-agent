@@ -9,9 +9,8 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定（バージョンなど）
 # ==========================================
-APP_VERSION = "1.3.0" # ★日本時間対応＆朝のルーティン強化版
+APP_VERSION = "1.4.0" # ★ワンタッチボタン＆Yahooニュース限定版
 
-# パスワードとAPIキーの自動読み込み
 load_dotenv()
 
 def load_password():
@@ -45,9 +44,14 @@ if entered_pin != MY_SECRET_PIN:
     st.stop()
 
 # ==========================================
-# 1. 初期設定
+# 1. 初期設定とサイドバーメニュー
 # ==========================================
 st.sidebar.success("ロック解除成功！")
+
+# ★追加：サイドバーにワンタッチボタンを設置
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⚡ クイックアクション")
+routine_btn = st.sidebar.button("🌅 朝のルーティンを実行")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -59,7 +63,6 @@ google_api_key = os.environ.get("GOOGLE_API_KEY")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
 
 if google_api_key and tavily_api_key:
-    # ★修正：イギリス時間ではなく、強制的に「日本時間（JST）」を取得する
     JST = datetime.timezone(datetime.timedelta(hours=+9), 'JST')
     today_str = datetime.datetime.now(JST).strftime("%Y年%m月%d日")
 
@@ -67,17 +70,24 @@ if google_api_key and tavily_api_key:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
+    # 通常のテキスト入力
     user_input = st.chat_input("AI秘書に指示を出してください")
 
-    if user_input:
+    # ★追加：ボタンが押されたか、テキストが入力されたら処理を開始する
+    prompt = None
+    if routine_btn:
+        prompt = "朝のルーティンを実行してください。"
+    elif user_input:
+        prompt = user_input
+
+    if prompt:
         with st.chat_message("user"):
-            st.write(user_input)
-        st.session_state.messages.append({"role": "user", "content": user_input})
+            st.write(prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner("最新の情報を一生懸命検索しています（少し時間がかかります）..."):
+            with st.spinner("最新のYahoo!ニュースを検索しています..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-                # ★修正：一度に検索できる情報量を「3件」から「10件」に大幅アップ！
                 search_tool = TavilySearchResults(max_results=10)
                 agent_executor = create_react_agent(llm, [search_tool])
 
@@ -92,7 +102,7 @@ if google_api_key and tavily_api_key:
                 {SYSTEM_RULES}
 
                 【私からの指示】
-                {user_input}
+                {prompt}
                 """
                 
                 chat_history[-1] = ("user", hidden_instructions)
