@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定（バージョンなど）
 # ==========================================
-APP_VERSION = "1.2.0" # ★ルール外部ファイル化バージョン
+APP_VERSION = "1.3.0" # ★日本時間対応＆朝のルーティン強化版
 
 # パスワードとAPIキーの自動読み込み
 load_dotenv()
@@ -22,7 +22,6 @@ def load_password():
         return "1234"
 
 def load_instructions():
-    """外部ファイルからAIのルールを読み込む関数"""
     try:
         with open("instructions.txt", "r", encoding="utf-8") as f:
             return f.read().strip()
@@ -30,7 +29,7 @@ def load_instructions():
         return "あなたは私の優秀なAI秘書です。丁寧に回答してください。"
 
 MY_SECRET_PIN = load_password()
-SYSTEM_RULES = load_instructions() # ★起動時にルールを読み込む
+SYSTEM_RULES = load_instructions()
 
 # ==========================================
 # 画面の表示（タイトルとバージョン）
@@ -46,7 +45,7 @@ if entered_pin != MY_SECRET_PIN:
     st.stop()
 
 # ==========================================
-# 1. 初期設定（ロック解除後に初めて表示される）
+# 1. 初期設定
 # ==========================================
 st.sidebar.success("ロック解除成功！")
 
@@ -60,7 +59,9 @@ google_api_key = os.environ.get("GOOGLE_API_KEY")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
 
 if google_api_key and tavily_api_key:
-    today_str = datetime.date.today().strftime("%Y年%m月%d日")
+    # ★修正：イギリス時間ではなく、強制的に「日本時間（JST）」を取得する
+    JST = datetime.timezone(datetime.timedelta(hours=+9), 'JST')
+    today_str = datetime.datetime.now(JST).strftime("%Y年%m月%d日")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -74,18 +75,16 @@ if google_api_key and tavily_api_key:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
         with st.chat_message("assistant"):
-            with st.spinner("情報を集めています..."):
+            with st.spinner("最新の情報を一生懸命検索しています（少し時間がかかります）..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-                search_tool = TavilySearchResults(max_results=3)
+                # ★修正：一度に検索できる情報量を「3件」から「10件」に大幅アップ！
+                search_tool = TavilySearchResults(max_results=10)
                 agent_executor = create_react_agent(llm, [search_tool])
 
                 chat_history = []
                 for m in st.session_state.messages:
                     chat_history.append((m["role"], m["content"]))
                 
-                # ==========================================
-                # ★エージェントへの隠しルール（読み込んだテキストを合体）
-                # ==========================================
                 hidden_instructions = f"""
                 今日は {today_str} です。
 
