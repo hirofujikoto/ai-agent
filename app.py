@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定（バージョンなど）
 # ==========================================
-APP_VERSION = "1.0.0" # ★ここでバージョン番号を管理します
+APP_VERSION = "1.2.0" # ★ルール外部ファイル化バージョン
 
 # パスワードとAPIキーの自動読み込み
 load_dotenv()
@@ -21,13 +21,22 @@ def load_password():
     except FileNotFoundError:
         return "1234"
 
+def load_instructions():
+    """外部ファイルからAIのルールを読み込む関数"""
+    try:
+        with open("instructions.txt", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return "あなたは私の優秀なAI秘書です。丁寧に回答してください。"
+
 MY_SECRET_PIN = load_password()
+SYSTEM_RULES = load_instructions() # ★起動時にルールを読み込む
 
 # ==========================================
 # 画面の表示（タイトルとバージョン）
 # ==========================================
 st.markdown("#### ☀️ 私のAI秘書エージェント")
-st.caption(f"バージョン: {APP_VERSION}") # ★タイトルの下に小さくバージョンを表示します
+st.caption(f"バージョン: {APP_VERSION}")
 
 st.sidebar.markdown("### 🔒 セキュリティロック")
 entered_pin = st.sidebar.text_input("暗証番号を入力してください", type="password")
@@ -74,7 +83,20 @@ if google_api_key and tavily_api_key:
                 for m in st.session_state.messages:
                     chat_history.append((m["role"], m["content"]))
                 
-                chat_history[-1] = ("user", f"今日は {today_str} です。以下の指示を実行してください：\n{user_input}")
+                # ==========================================
+                # ★エージェントへの隠しルール（読み込んだテキストを合体）
+                # ==========================================
+                hidden_instructions = f"""
+                今日は {today_str} です。
+
+                【特別ルール】
+                {SYSTEM_RULES}
+
+                【私からの指示】
+                {user_input}
+                """
+                
+                chat_history[-1] = ("user", hidden_instructions)
 
                 result = agent_executor.invoke({"messages": chat_history})
                 
