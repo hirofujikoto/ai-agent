@@ -4,12 +4,15 @@ import os
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.prebuilt import create_react_agent
-from dotenv import load_dotenv # ★追加した部品
+from dotenv import load_dotenv
 
 # ==========================================
-# 0. パスワードとAPIキーの自動読み込み
+# 0. アプリケーション設定（バージョンなど）
 # ==========================================
-load_dotenv() # ★ここで .env ファイルの中身を自動的に読み込みます！
+APP_VERSION = "1.0.0" # ★ここでバージョン番号を管理します
+
+# パスワードとAPIキーの自動読み込み
+load_dotenv()
 
 def load_password():
     try:
@@ -20,7 +23,11 @@ def load_password():
 
 MY_SECRET_PIN = load_password()
 
+# ==========================================
+# 画面の表示（タイトルとバージョン）
+# ==========================================
 st.markdown("#### ☀️ 私のAI秘書エージェント")
+st.caption(f"バージョン: {APP_VERSION}") # ★タイトルの下に小さくバージョンを表示します
 
 st.sidebar.markdown("### 🔒 セキュリティロック")
 entered_pin = st.sidebar.text_input("暗証番号を入力してください", type="password")
@@ -33,7 +40,6 @@ if entered_pin != MY_SECRET_PIN:
 # 1. 初期設定（ロック解除後に初めて表示される）
 # ==========================================
 st.sidebar.success("ロック解除成功！")
-# ★APIキーの入力欄は不要になったので削除しました！
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -41,7 +47,6 @@ if "messages" not in st.session_state:
 # ==========================================
 # 2. エージェントの実行とチャット画面
 # ==========================================
-# ★.envから読み込んだキーを変数にセット
 google_api_key = os.environ.get("GOOGLE_API_KEY")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
 
