@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定（バージョンなど）
 # ==========================================
-APP_VERSION = "1.4.0" # ★ワンタッチボタン＆Yahooニュース限定版
+APP_VERSION = "1.5.0" # ★クイックアクション3分割＆Yahoo天気対応版
 
 load_dotenv()
 
@@ -48,10 +48,12 @@ if entered_pin != MY_SECRET_PIN:
 # ==========================================
 st.sidebar.success("ロック解除成功！")
 
-# ★追加：サイドバーにワンタッチボタンを設置
+# ★追加：サイドバーのワンタッチボタンを3つに分割
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚡ クイックアクション")
-routine_btn = st.sidebar.button("🌅 朝のルーティンを実行")
+weather_btn = st.sidebar.button("🌤️ 福山市の天気")
+news_btn = st.sidebar.button("📰 最新ニュース")
+carp_btn = st.sidebar.button("⚾ カープ情報")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -73,10 +75,14 @@ if google_api_key and tavily_api_key:
     # 通常のテキスト入力
     user_input = st.chat_input("AI秘書に指示を出してください")
 
-    # ★追加：ボタンが押されたか、テキストが入力されたら処理を開始する
+    # ★変更：どのボタンが押されたかによって、AIへの指示（プロンプト）を変える
     prompt = None
-    if routine_btn:
-        prompt = "朝のルーティンを実行してください。"
+    if weather_btn:
+        prompt = "今日の福山市の天気を、Yahoo!天気から時間ごとに調べて教えてください。"
+    elif news_btn:
+        prompt = "今日の政治、経済、スポーツのニュースを、Yahoo!ニュースから調べて教えてください。"
+    elif carp_btn:
+        prompt = "広島東洋カープの最新情報（試合結果や予定など）を調べて教えてください。"
     elif user_input:
         prompt = user_input
 
@@ -86,7 +92,7 @@ if google_api_key and tavily_api_key:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner("最新のYahoo!ニュースを検索しています..."):
+            with st.spinner("情報を検索しています..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
                 search_tool = TavilySearchResults(max_results=10)
                 agent_executor = create_react_agent(llm, [search_tool])
