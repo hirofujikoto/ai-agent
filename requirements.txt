@@ -5,3 +5,5 @@ langgraph
 tavily-python
 python-dotenv
 PyPDF2
+google-api-python-client
+google-auth
