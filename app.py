@@ -1,15 +1,16 @@
 import streamlit as st
 import datetime
 import os
+import PyPDF2  # ★追加：PDFを解読するための道具
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 
 # ==========================================
-# 0. アプリケーション設定（バージョンなど）
+# 0. アプリケーション設定
 # ==========================================
-APP_VERSION = "1.5.0" # ★クイックアクション3分割＆Yahoo天気対応版
+APP_VERSION = "1.6.0" # ★ファイル読み込み機能追加版
 
 load_dotenv()
 
@@ -43,12 +44,33 @@ if entered_pin != MY_SECRET_PIN:
     st.warning("👈 左側のサイドバーに正しい暗証番号を入力してロックを解除してください。")
     st.stop()
 
-# ==========================================
-# 1. 初期設定とサイドバーメニュー
-# ==========================================
 st.sidebar.success("ロック解除成功！")
 
-# ★追加：サイドバーのワンタッチボタンを3つに分割
+# ==========================================
+# ★追加：ゴルフデータなどのファイル投入口
+# ==========================================
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⛳ データ読み込み")
+uploaded_file = st.sidebar.file_uploader("テキストやPDFをアップロード", type=["txt", "pdf"])
+
+file_content = ""
+if uploaded_file is not None:
+    # テキストファイルの場合
+    if uploaded_file.type == "text/plain":
+        file_content = uploaded_file.read().decode("utf-8")
+        st.sidebar.success("テキストデータを読み込みました！")
+    # PDFファイルの場合
+    elif uploaded_file.type == "application/pdf":
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        for page in pdf_reader.pages:
+            extracted = page.extract_text()
+            if extracted:
+                file_content += extracted + "\n"
+        st.sidebar.success("PDFデータを読み込みました！")
+
+# ==========================================
+# クイックアクションボタン
+# ==========================================
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚡ クイックアクション")
 weather_btn = st.sidebar.button("🌤️ 福山市の天気")
@@ -59,7 +81,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # ==========================================
-# 2. エージェントの実行とチャット画面
+# エージェントの実行
 # ==========================================
 google_api_key = os.environ.get("GOOGLE_API_KEY")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
@@ -72,10 +94,8 @@ if google_api_key and tavily_api_key:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-    # 通常のテキスト入力
     user_input = st.chat_input("AI秘書に指示を出してください")
 
-    # ★変更：どのボタンが押されたかによって、AIへの指示（プロンプト）を変える
     prompt = None
     if weather_btn:
         prompt = "今日の福山市の天気を、Yahoo!天気から時間ごとに調べて教えてください。"
@@ -92,20 +112,26 @@ if google_api_key and tavily_api_key:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner("情報を検索しています..."):
+            with st.spinner("情報を検索・分析しています..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-                search_tool = TavilySearchResults(max_results=10)
+                search_tool = TavilySearchResults(max_results=5) # エラー防止のため5件に設定
                 agent_executor = create_react_agent(llm, [search_tool])
 
                 chat_history = []
                 for m in st.session_state.messages:
                     chat_history.append((m["role"], m["content"]))
                 
+                # ★追加：読み込んだファイルの中身をAIにこっそり渡す
+                file_instruction = ""
+                if file_content:
+                    file_instruction = f"\n\n【読み込んだファイルデータ】\n以下のデータを参考にして回答してください：\n{file_content}\n"
+
                 hidden_instructions = f"""
                 今日は {today_str} です。
 
                 【特別ルール】
                 {SYSTEM_RULES}
+                {file_instruction}
 
                 【私からの指示】
                 {prompt}
