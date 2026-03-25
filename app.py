@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定
 # ==========================================
-APP_VERSION = "1.8.0" # ★サブフォルダ＆スプレッドシート対応版
+APP_VERSION = "2.0.0" # ★履歴保存 ＆ ローカルファイル直接読み込み ＆ 待機モード版
 
 load_dotenv()
 
@@ -37,79 +37,101 @@ MY_SECRET_PIN = load_password()
 SYSTEM_RULES = load_instructions()
 
 # ==========================================
-# ★進化：ドライブ読み込みツール（サブフォルダ対応）
+# ★進化1：会話履歴のオートセーブ（保存と読み込み）
 # ==========================================
+HISTORY_FILE = "chat_history.json"
+
+def load_chat_history():
+    """保存された会話履歴を読み込む"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_chat_history(messages):
+    """会話履歴をファイルに保存する"""
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(messages, f, ensure_ascii=False, indent=2)
+
+# ==========================================
+# ツール1：Googleドライブ読み込み（前回作成した超高速版）
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_all_drive_data(creds_json_str, folder_id):
+    creds_info = json.loads(creds_json_str)
+    creds = service_account.Credentials.from_service_account_info(creds_info)
+    service = build('drive', 'v3', credentials=creds)
+
+    def get_files_recursive(current_folder_id):
+        files_list = []
+        results = service.files().list(
+            q=f"'{current_folder_id}' in parents and trashed=false",
+            fields="files(id, name, mimeType)"
+        ).execute()
+        for item in results.get('files', []):
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                files_list.extend(get_files_recursive(item['id']))
+            else:
+                files_list.append(item)
+        return files_list
+
+    items = get_files_recursive(folder_id)
+    if not items:
+        return "ドライブにデータが見つかりませんでした。"
+
+    all_text = "【Googleドライブ内の過去データ】\n"
+    for item in items:
+        all_text += f"\n--- {item['name']} ---\n"
+        mime = item['mimeType']
+        try:
+            if mime == 'application/vnd.google-apps.document':
+                request = service.files().export_media(fileId=item['id'], mimeType='text/plain')
+                all_text += io.BytesIO(request.execute()).read().decode('utf-8') + "\n"
+            elif mime == 'application/vnd.google-apps.spreadsheet':
+                request = service.files().export_media(fileId=item['id'], mimeType='text/csv')
+                all_text += io.BytesIO(request.execute()).read().decode('utf-8') + "\n"
+            else:
+                request = service.files().get_media(fileId=item['id'])
+                downloaded = io.BytesIO(request.execute())
+                if mime == 'application/pdf':
+                    for page in PyPDF2.PdfReader(downloaded).pages:
+                        if page.extract_text(): all_text += page.extract_text() + "\n"
+                elif mime in ['text/plain', 'text/csv']:
+                    all_text += downloaded.read().decode('utf-8') + "\n"
+        except:
+            pass
+    return all_text[:8000]
+
 @tool
 def read_golf_drive_data() -> str:
-    """Googleドライブの「ゴルフデータ」フォルダから、過去の反省点やスコアを読み込みます。"""
+    """Googleドライブの「ゴルフデータ」フォルダから、過去の反省点を読み込みます。"""
+    creds_json_str = st.secrets.get("GCP_SERVICE_ACCOUNT") or os.environ.get("GCP_SERVICE_ACCOUNT")
+    folder_id = st.secrets.get("DRIVE_FOLDER_ID") or os.environ.get("DRIVE_FOLDER_ID")
+    if not creds_json_str or not folder_id: return "エラー：Googleドライブの設定がありません。"
+    return fetch_all_drive_data(creds_json_str, folder_id)
+
+# ==========================================
+# ★進化2：アプリと同じ場所にあるファイルを直接読むツール
+# ==========================================
+@tool
+def read_local_app_data() -> str:
+    """アプリと同じ場所（GitHub上）に保存されている、ゴルフの実績スコアなどのテキストやCSVファイルを直接読み込みます。"""
+    all_text = "【アプリ内の実績スコアデータ】\n"
     try:
-        creds_json_str = st.secrets.get("GCP_SERVICE_ACCOUNT") or os.environ.get("GCP_SERVICE_ACCOUNT")
-        folder_id = st.secrets.get("DRIVE_FOLDER_ID") or os.environ.get("DRIVE_FOLDER_ID")
-        
-        if not creds_json_str or not folder_id:
-            return "エラー：Googleドライブの連携設定がされていません。"
-
-        creds_info = json.loads(creds_json_str)
-        creds = service_account.Credentials.from_service_account_info(creds_info)
-        service = build('drive', 'v3', credentials=creds)
-
-        # ★追加：サブフォルダの中身も再帰的にすべて探し出す魔法の関数
-        def get_files_recursive(current_folder_id):
-            files_list = []
-            results = service.files().list(
-                q=f"'{current_folder_id}' in parents and trashed=false",
-                fields="files(id, name, mimeType)"
-            ).execute()
-            
-            for item in results.get('files', []):
-                if item['mimeType'] == 'application/vnd.google-apps.folder':
-                    # フォルダなら、その箱を開けてさらに中を探す
-                    files_list.extend(get_files_recursive(item['id']))
-                else:
-                    # ファイルならリストに追加する
-                    files_list.append(item)
-            return files_list
-
-        # 大元のフォルダIDから探索スタート
-        items = get_files_recursive(folder_id)
-
-        if not items:
-            return "ドライブにデータが見つかりませんでした。"
-
-        all_text = "【過去のゴルフデータ・反省点】\n"
-        for item in items:
-            all_text += f"\n--- {item['name']} ---\n"
-            mime = item['mimeType']
-            
-            try:
-                if mime == 'application/vnd.google-apps.document': # Googleドキュメント
-                    request = service.files().export_media(fileId=item['id'], mimeType='text/plain')
-                    downloaded = io.BytesIO(request.execute())
-                    all_text += downloaded.read().decode('utf-8') + "\n"
-                elif mime == 'application/vnd.google-apps.spreadsheet': # ★追加：スプレッドシート（表計算）
-                    request = service.files().export_media(fileId=item['id'], mimeType='text/csv')
-                    downloaded = io.BytesIO(request.execute())
-                    all_text += downloaded.read().decode('utf-8') + "\n"
-                else:
-                    request = service.files().get_media(fileId=item['id'])
-                    downloaded = io.BytesIO(request.execute())
-                    
-                    if mime == 'application/pdf': # PDF
-                        reader = PyPDF2.PdfReader(downloaded)
-                        for page in reader.pages:
-                            text = page.extract_text()
-                            if text:
-                                all_text += text + "\n"
-                    elif mime == 'text/plain' or mime == 'text/csv': # テキストやCSV
-                        all_text += downloaded.read().decode('utf-8') + "\n"
-                    else:
-                        all_text += "（読み込めない形式のファイルです）\n"
-            except Exception as file_e:
-                all_text += f"（ファイル読み込みエラー: {str(file_e)}）\n"
-
-        return all_text[:10000] # 一度に読める文字数を少し増やしました
+        # アプリのフォルダ内にあるファイルをすべて確認
+        for filename in os.listdir('.'):
+            # システム関係のファイル（app.pyなど）は除外して、テキストやCSVだけを読む
+            if filename.endswith('.csv') or filename.endswith('.txt'):
+                if filename not in ['app.py', 'requirements.txt', 'instructions.txt', 'password.txt']:
+                    with open(filename, 'r', encoding='utf-8') as file:
+                        all_text += f"\n--- {filename} ---\n"
+                        all_text += file.read()[:2000] + "\n"
+        return all_text
     except Exception as e:
-        return f"ドライブのアクセスでエラーが発生しました: {str(e)}"
+        return f"ローカルファイルの読み込みエラー: {str(e)}"
 
 # ==========================================
 # 画面の表示
@@ -124,17 +146,25 @@ if entered_pin != MY_SECRET_PIN:
     st.warning("👈 左側のサイドバーに正しい暗証番号を入力してロックを解除してください。")
     st.stop()
 
+# ==========================================
+# 会話履歴の復元
+# ==========================================
+if "messages" not in st.session_state:
+    st.session_state.messages = load_chat_history() # ★ファイルから記憶を呼び出す
+
 st.sidebar.success("ロック解除成功！")
+# ★追加：記憶を消去するリセットボタン
+if st.sidebar.button("🗑️ 会話の記憶をリセット"):
+    st.session_state.messages = []
+    save_chat_history([])
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚡ クイックアクション")
 weather_btn = st.sidebar.button("🌤️ 福山市の天気")
 news_btn = st.sidebar.button("📰 最新ニュース")
 carp_btn = st.sidebar.button("⚾ カープ情報")
-golf_btn = st.sidebar.button("⛳ ゴルフコーチに相談")
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+golf_btn = st.sidebar.button("⛳ ゴルフデータを読み込む") # ★ボタン名も変更
 
 google_api_key = os.environ.get("GOOGLE_API_KEY")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
@@ -157,7 +187,8 @@ if google_api_key and tavily_api_key:
     elif carp_btn:
         prompt = "広島東洋カープの最新情報（試合結果や予定など）を調べて教えてください。"
     elif golf_btn:
-        prompt = "Googleドライブのデータをすべて読み込んで、過去の反省点やスコアを踏まえた、次回の練習アドバイスを具体的に教えてください。"
+        # ★進化3：勝手にアドバイスせず、待機するように指示を変更
+        prompt = "Googleドライブ内の過去の反省点データと、アプリ内にある実績スコアデータをすべて読み込んで内容を把握してください。その後、勝手にアドバイスは行わず、「データの読み込みと内容の把握が完了しました。どのような分析やご相談をご希望ですか？」とだけ返答して待機してください。"
     elif user_input:
         prompt = user_input
 
@@ -167,10 +198,11 @@ if google_api_key and tavily_api_key:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner("情報を検索・分析しています（ドライブのサブフォルダも確認中）..."):
+            with st.spinner("情報を処理しています..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
                 search_tool = TavilySearchResults(max_results=5)
-                agent_executor = create_react_agent(llm, [search_tool, read_golf_drive_data])
+                # ★変更：アプリ内のファイルを読むツール(read_local_app_data)を追加！
+                agent_executor = create_react_agent(llm, [search_tool, read_golf_drive_data, read_local_app_data])
 
                 chat_history = []
                 for m in st.session_state.messages:
@@ -183,7 +215,6 @@ if google_api_key and tavily_api_key:
                 【私からの指示】
                 {prompt}
                 """
-                
                 chat_history[-1] = ("user", hidden_instructions)
 
                 result = agent_executor.invoke({"messages": chat_history})
@@ -192,6 +223,9 @@ if google_api_key and tavily_api_key:
                 response_text = final_content[0].get("text", "") if isinstance(final_content, list) else final_content
                 st.write(response_text)
 
+                # ★回答を履歴に追加して、ファイルにセーブ！
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
+                save_chat_history(st.session_state.messages)
+
 else:
     st.error("エラー：.envファイルにAPIキーが正しく設定されていません。")
