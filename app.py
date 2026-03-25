@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定
 # ==========================================
-APP_VERSION = "1.7.0" # ★Googleドライブ連携・専属キャディ版
+APP_VERSION = "1.8.0" # ★サブフォルダ＆スプレッドシート対応版
 
 load_dotenv()
 
@@ -37,11 +37,11 @@ MY_SECRET_PIN = load_password()
 SYSTEM_RULES = load_instructions()
 
 # ==========================================
-# ★追加：Googleドライブ読み込みツール（AIの手足）
+# ★進化：ドライブ読み込みツール（サブフォルダ対応）
 # ==========================================
 @tool
 def read_golf_drive_data() -> str:
-    """Googleドライブの「ゴルフデータ」フォルダから、過去の反省点や練習方法のテキスト・PDFを読み込んで返します。ゴルフの相談に乗る時は、必ず最初にこのツールを使って過去のデータを確認してください。"""
+    """Googleドライブの「ゴルフデータ」フォルダから、過去の反省点やスコアを読み込みます。"""
     try:
         creds_json_str = st.secrets.get("GCP_SERVICE_ACCOUNT") or os.environ.get("GCP_SERVICE_ACCOUNT")
         folder_id = st.secrets.get("DRIVE_FOLDER_ID") or os.environ.get("DRIVE_FOLDER_ID")
@@ -53,14 +53,28 @@ def read_golf_drive_data() -> str:
         creds = service_account.Credentials.from_service_account_info(creds_info)
         service = build('drive', 'v3', credentials=creds)
 
-        results = service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            fields="files(id, name, mimeType)"
-        ).execute()
-        items = results.get('files', [])
+        # ★追加：サブフォルダの中身も再帰的にすべて探し出す魔法の関数
+        def get_files_recursive(current_folder_id):
+            files_list = []
+            results = service.files().list(
+                q=f"'{current_folder_id}' in parents and trashed=false",
+                fields="files(id, name, mimeType)"
+            ).execute()
+            
+            for item in results.get('files', []):
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    # フォルダなら、その箱を開けてさらに中を探す
+                    files_list.extend(get_files_recursive(item['id']))
+                else:
+                    # ファイルならリストに追加する
+                    files_list.append(item)
+            return files_list
+
+        # 大元のフォルダIDから探索スタート
+        items = get_files_recursive(folder_id)
 
         if not items:
-            return "ドライブのフォルダにデータが見つかりませんでした。ファイルを置いてください。"
+            return "ドライブにデータが見つかりませんでした。"
 
         all_text = "【過去のゴルフデータ・反省点】\n"
         for item in items:
@@ -70,6 +84,10 @@ def read_golf_drive_data() -> str:
             try:
                 if mime == 'application/vnd.google-apps.document': # Googleドキュメント
                     request = service.files().export_media(fileId=item['id'], mimeType='text/plain')
+                    downloaded = io.BytesIO(request.execute())
+                    all_text += downloaded.read().decode('utf-8') + "\n"
+                elif mime == 'application/vnd.google-apps.spreadsheet': # ★追加：スプレッドシート（表計算）
+                    request = service.files().export_media(fileId=item['id'], mimeType='text/csv')
                     downloaded = io.BytesIO(request.execute())
                     all_text += downloaded.read().decode('utf-8') + "\n"
                 else:
@@ -82,14 +100,14 @@ def read_golf_drive_data() -> str:
                             text = page.extract_text()
                             if text:
                                 all_text += text + "\n"
-                    elif mime == 'text/plain': # テキスト
+                    elif mime == 'text/plain' or mime == 'text/csv': # テキストやCSV
                         all_text += downloaded.read().decode('utf-8') + "\n"
                     else:
                         all_text += "（読み込めない形式のファイルです）\n"
             except Exception as file_e:
                 all_text += f"（ファイル読み込みエラー: {str(file_e)}）\n"
 
-        return all_text[:8000] # 文字数制限
+        return all_text[:10000] # 一度に読める文字数を少し増やしました
     except Exception as e:
         return f"ドライブのアクセスでエラーが発生しました: {str(e)}"
 
@@ -113,7 +131,6 @@ st.sidebar.markdown("### ⚡ クイックアクション")
 weather_btn = st.sidebar.button("🌤️ 福山市の天気")
 news_btn = st.sidebar.button("📰 最新ニュース")
 carp_btn = st.sidebar.button("⚾ カープ情報")
-# ★追加：ゴルフ専用ボタン
 golf_btn = st.sidebar.button("⛳ ゴルフコーチに相談")
 
 if "messages" not in st.session_state:
@@ -140,7 +157,7 @@ if google_api_key and tavily_api_key:
     elif carp_btn:
         prompt = "広島東洋カープの最新情報（試合結果や予定など）を調べて教えてください。"
     elif golf_btn:
-        prompt = "Googleドライブのデータを読み込んで、過去の反省点や課題を踏まえた、次回の練習アドバイスを教えてください。"
+        prompt = "Googleドライブのデータをすべて読み込んで、過去の反省点やスコアを踏まえた、次回の練習アドバイスを具体的に教えてください。"
     elif user_input:
         prompt = user_input
 
@@ -150,10 +167,9 @@ if google_api_key and tavily_api_key:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            with st.spinner("情報を検索・分析しています（ドライブも確認中）..."):
+            with st.spinner("情報を検索・分析しています（ドライブのサブフォルダも確認中）..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
                 search_tool = TavilySearchResults(max_results=5)
-                # ★変更：AIにドライブ読み込みツールを持たせる
                 agent_executor = create_react_agent(llm, [search_tool, read_golf_drive_data])
 
                 chat_history = []
