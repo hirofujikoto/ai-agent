@@ -3,6 +3,7 @@ import datetime
 import os
 import json
 import io
+import time
 import PyPDF2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -15,9 +16,18 @@ from dotenv import load_dotenv
 # ==========================================
 # 0. アプリケーション設定
 # ==========================================
-APP_VERSION = "2.0.0" # ★履歴保存 ＆ ローカルファイル直接読み込み ＆ 待機モード版
+APP_VERSION = "2.1.0" # ★並列処理エラー(NoSessionContext)完全修正版
 
 load_dotenv()
+
+# ★修正：AIが裏で分身してもエラーにならないよう、合鍵をOS（システム）の環境変数に退避させる
+try:
+    if "GCP_SERVICE_ACCOUNT" in st.secrets:
+        os.environ["GCP_SERVICE_ACCOUNT"] = st.secrets["GCP_SERVICE_ACCOUNT"]
+    if "DRIVE_FOLDER_ID" in st.secrets:
+        os.environ["DRIVE_FOLDER_ID"] = st.secrets["DRIVE_FOLDER_ID"]
+except Exception:
+    pass
 
 def load_password():
     try:
@@ -37,12 +47,12 @@ MY_SECRET_PIN = load_password()
 SYSTEM_RULES = load_instructions()
 
 # ==========================================
-# ★進化1：会話履歴のオートセーブ（保存と読み込み）
+# ファイル保存用の設定
 # ==========================================
 HISTORY_FILE = "chat_history.json"
+DRIVE_CACHE_FILE = "drive_cache.txt" # ★追加：ドライブ記憶用の頑丈なファイル
 
 def load_chat_history():
-    """保存された会話履歴を読み込む"""
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -52,15 +62,14 @@ def load_chat_history():
     return []
 
 def save_chat_history(messages):
-    """会話履歴をファイルに保存する"""
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(messages, f, ensure_ascii=False, indent=2)
 
 # ==========================================
-# ツール1：Googleドライブ読み込み（前回作成した超高速版）
+# ツール1：Googleドライブ読み込み（ファイルキャッシュ版）
 # ==========================================
-@st.cache_data(ttl=3600)
-def fetch_all_drive_data(creds_json_str, folder_id):
+def fetch_all_drive_data_logic(creds_json_str, folder_id):
+    """実際に通信してデータを取りに行く処理"""
     creds_info = json.loads(creds_json_str)
     creds = service_account.Credentials.from_service_account_info(creds_info)
     service = build('drive', 'v3', credentials=creds)
@@ -108,24 +117,39 @@ def fetch_all_drive_data(creds_json_str, folder_id):
 @tool
 def read_golf_drive_data() -> str:
     """Googleドライブの「ゴルフデータ」フォルダから、過去の反省点を読み込みます。"""
-    creds_json_str = st.secrets.get("GCP_SERVICE_ACCOUNT") or os.environ.get("GCP_SERVICE_ACCOUNT")
-    folder_id = st.secrets.get("DRIVE_FOLDER_ID") or os.environ.get("DRIVE_FOLDER_ID")
+    creds_json_str = os.environ.get("GCP_SERVICE_ACCOUNT")
+    folder_id = os.environ.get("DRIVE_FOLDER_ID")
     if not creds_json_str or not folder_id: return "エラー：Googleドライブの設定がありません。"
-    return fetch_all_drive_data(creds_json_str, folder_id)
+    
+    # ★修正：エラーが起きない「ファイル保存形式」のキャッシュに変更
+    if os.path.exists(DRIVE_CACHE_FILE):
+        if time.time() - os.path.getmtime(DRIVE_CACHE_FILE) < 3600: # 1時間以内なら記憶を使う
+            try:
+                with open(DRIVE_CACHE_FILE, "r", encoding="utf-8") as f:
+                    return f.read()
+            except:
+                pass
+                
+    # 記憶がない、または古い場合は取得してファイルに書き込む
+    data = fetch_all_drive_data_logic(creds_json_str, folder_id)
+    try:
+        with open(DRIVE_CACHE_FILE, "w", encoding="utf-8") as f:
+            f.write(data)
+    except:
+        pass
+    return data
 
 # ==========================================
-# ★進化2：アプリと同じ場所にあるファイルを直接読むツール
+# ツール2：アプリと同じ場所にあるファイルを直接読む
 # ==========================================
 @tool
 def read_local_app_data() -> str:
     """アプリと同じ場所（GitHub上）に保存されている、ゴルフの実績スコアなどのテキストやCSVファイルを直接読み込みます。"""
     all_text = "【アプリ内の実績スコアデータ】\n"
     try:
-        # アプリのフォルダ内にあるファイルをすべて確認
         for filename in os.listdir('.'):
-            # システム関係のファイル（app.pyなど）は除外して、テキストやCSVだけを読む
             if filename.endswith('.csv') or filename.endswith('.txt'):
-                if filename not in ['app.py', 'requirements.txt', 'instructions.txt', 'password.txt']:
+                if filename not in ['app.py', 'requirements.txt', 'instructions.txt', 'password.txt', 'drive_cache.txt']:
                     with open(filename, 'r', encoding='utf-8') as file:
                         all_text += f"\n--- {filename} ---\n"
                         all_text += file.read()[:2000] + "\n"
@@ -146,14 +170,10 @@ if entered_pin != MY_SECRET_PIN:
     st.warning("👈 左側のサイドバーに正しい暗証番号を入力してロックを解除してください。")
     st.stop()
 
-# ==========================================
-# 会話履歴の復元
-# ==========================================
 if "messages" not in st.session_state:
-    st.session_state.messages = load_chat_history() # ★ファイルから記憶を呼び出す
+    st.session_state.messages = load_chat_history()
 
 st.sidebar.success("ロック解除成功！")
-# ★追加：記憶を消去するリセットボタン
 if st.sidebar.button("🗑️ 会話の記憶をリセット"):
     st.session_state.messages = []
     save_chat_history([])
@@ -164,7 +184,7 @@ st.sidebar.markdown("### ⚡ クイックアクション")
 weather_btn = st.sidebar.button("🌤️ 福山市の天気")
 news_btn = st.sidebar.button("📰 最新ニュース")
 carp_btn = st.sidebar.button("⚾ カープ情報")
-golf_btn = st.sidebar.button("⛳ ゴルフデータを読み込む") # ★ボタン名も変更
+golf_btn = st.sidebar.button("⛳ ゴルフデータを読み込む")
 
 google_api_key = os.environ.get("GOOGLE_API_KEY")
 tavily_api_key = os.environ.get("TAVILY_API_KEY")
@@ -187,7 +207,6 @@ if google_api_key and tavily_api_key:
     elif carp_btn:
         prompt = "広島東洋カープの最新情報（試合結果や予定など）を調べて教えてください。"
     elif golf_btn:
-        # ★進化3：勝手にアドバイスせず、待機するように指示を変更
         prompt = "Googleドライブ内の過去の反省点データと、アプリ内にある実績スコアデータをすべて読み込んで内容を把握してください。その後、勝手にアドバイスは行わず、「データの読み込みと内容の把握が完了しました。どのような分析やご相談をご希望ですか？」とだけ返答して待機してください。"
     elif user_input:
         prompt = user_input
@@ -201,7 +220,6 @@ if google_api_key and tavily_api_key:
             with st.spinner("情報を処理しています..."):
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
                 search_tool = TavilySearchResults(max_results=5)
-                # ★変更：アプリ内のファイルを読むツール(read_local_app_data)を追加！
                 agent_executor = create_react_agent(llm, [search_tool, read_golf_drive_data, read_local_app_data])
 
                 chat_history = []
@@ -223,7 +241,6 @@ if google_api_key and tavily_api_key:
                 response_text = final_content[0].get("text", "") if isinstance(final_content, list) else final_content
                 st.write(response_text)
 
-                # ★回答を履歴に追加して、ファイルにセーブ！
                 st.session_state.messages.append({"role": "assistant", "content": response_text})
                 save_chat_history(st.session_state.messages)
 
